@@ -1,0 +1,54 @@
+---
+- name: Ansible felhasználó létrehozása és SSH hardening
+  hosts: testservers
+  become: true
+
+  vars:
+    ansible_service_user: ansible
+    ansible_pubkey: "{{ lookup('file', '~/.ssh/ansible_id.pub') }}"
+
+  tasks:
+
+    # ── 1. ANSIBLE USER LÉTREHOZÁSA ─────────────────────────────────────────
+
+    - name: ansible felhasználó létrehozása
+      user:
+        name: "{{ ansible_service_user }}"
+        shell: /bin/bash
+        create_home: yes
+        state: present
+
+    - name: .ssh könyvtár létrehozása
+      file:
+        path: "/home/{{ ansible_service_user }}/.ssh"
+        state: directory
+        owner: "{{ ansible_service_user }}"
+        group: "{{ ansible_service_user }}"
+        mode: "0700"
+
+    - name: SSH publikus kulcs feltöltése
+      authorized_key:
+        user: "{{ ansible_service_user }}"
+        key: "{{ ansible_pubkey }}"
+        state: present
+
+    # ── 2. SUDO JOGOK BEÁLLÍTÁSA ─────────────────────────────────────────────
+
+    - name: Jelszó nélküli sudo jog az ansible usernek
+      copy:
+        dest: /etc/sudoers.d/ansible
+        content: "ansible ALL=(ALL) NOPASSWD: ALL\n"
+        mode: "0440"
+        validate: "visudo -cf %s"
+
+    # ── 3. SSH HARDENING ─────────────────────────────────────────────────────
+
+    - name: Root SSH login tiltása
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+        state: present
+
+    - name: SSH konfiguráció újratöltése (SIGHUP – Docker kompatibilis)
+      shell: kill -HUP $(cat /var/run/sshd.pid 2>/dev/null || pgrep -x sshd | head -1)
