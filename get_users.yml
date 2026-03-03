@@ -3,6 +3,9 @@
   hosts: testservers
   become: true
 
+  vars:
+    collect_history: false
+
   tasks:
 
     # ── 1. FELHASZNÁLÓK ALAPADATAI ──────────────────────────────────────────
@@ -87,6 +90,7 @@
     # ── 3. BASH HISTORY ─────────────────────────────────────────────────────
 
     - name: Bash history lekérése minden valódi felhasználótól
+      when: collect_history | bool
       shell: |
         for u in {{ real_users.stdout_lines | join(' ') }}; do
           home=$(getent passwd "$u" | cut -d: -f6)
@@ -105,6 +109,7 @@
       changed_when: false
 
     - name: Root bash history (külön, mert eltérő home)
+      when: collect_history | bool
       shell: |
         echo "=== root ==="
         if [ -f /root/.bash_history ]; then
@@ -188,10 +193,10 @@
           {{ w_output.stdout | default('(nincs adat)') }}
 
           ── BASH HISTORY (valódi felhasználók) ───────────────────────────────
-          {{ bash_history.stdout | default('(nincs adat)') }}
+          {{ bash_history.stdout | default('(bash history gyűjtés kikapcsolva – collect_history: false)') }}
 
           ── BASH HISTORY (root) ───────────────────────────────────────────────
-          {{ root_history.stdout | default('(nincs adat)') }}
+          {{ root_history.stdout | default('(bash history gyűjtés kikapcsolva – collect_history: false)') }}
 
           ── AUTH LOG (ssh/sudo/su/login bejegyzések) ──────────────────────────
           {{ auth_log.stdout | default('(nincs adat)') }}
