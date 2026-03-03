@@ -1,2 +1,5 @@
 .vault_pass
 user_report_*.txt
+baselines/
+diffs/
+packages_node*.txt
