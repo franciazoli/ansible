@@ -1,0 +1,97 @@
+---
+- name: Felhasználók felvétele
+  hosts: testservers
+  become: true
+
+  vars:
+    username: "{{ user }}"
+    user_password: "{{ password | password_hash('sha512') }}"
+    user_groups_var: "{{ user_groups | default([]) }}"
+
+  tasks:
+    - name: Csoport létrehozása (ha nem létezik)
+      group:
+        name: "{{ item }}"
+        state: present
+      loop: "{{ user_groups_var }}"
+
+    - name: Felhasználó és home directory létrehozása
+      user:
+        name: "{{ username }}"
+        password: "{{ user_password }}"
+        state: present
+        groups: "{{ user_groups_var | join(',') }}"
+        append: true
+        shell: /bin/bash
+        create_home: yes
+
+    - name: Helyes jogosultságok biztosítása a home könyvtáron
+      file:
+        path: "/home/{{ username }}"
+        state: directory
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: "0700"
+
+    - name: sudoers.d mappa
+      file:
+        path: /etc/sudoers.d
+        state: directory
+        mode: "0750"
+
+    - name: Sudo jog az admins csoportnak
+      when: "'admins' in user_groups_var"
+      copy:
+        dest: /etc/sudoers.d/admins
+        content: "%admins ALL=(ALL) ALL\n"
+        mode: "0440"
+
+    # ── BASH HISTORY HARDENING ───────────────────────────────────────────────
+
+    - name: .bash_history fájl létrehozása (ha még nem létezik)
+      file:
+        path: "/home/{{ username }}/.bash_history"
+        state: touch
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        # 0640: a tulajdonos írhat/olvashat, a csoport olvashat, root (become) is látja
+        mode: "0640"
+        modification_time: preserve
+        access_time: preserve
+
+    - name: HISTSIZE és HISTFILESIZE beállítása a .bashrc-ben (ha még nincs benne)
+      blockinfile:
+        path: "/home/{{ username }}/.bashrc"
+        create: yes
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: "0644"
+        marker: "# {mark} ANSIBLE MANAGED – HISTORY SETTINGS"
+        block: |
+          # History méret: 10000 sor memóriában és fájlban
+          HISTSIZE=10000
+          HISTFILESIZE=10000
+          # Időbélyeg minden parancshoz (látható a history kimenetében)
+          HISTTIMEFORMAT="%Y-%m-%d %H:%M:%S  "
+          # Duplikált és szóközzel kezdődő parancsok kizárása a historyból
+          HISTCONTROL=ignoredups
+          # Session lezárásakor hozzáfűzés, ne felülírás
+          shopt -s histappend
+          # HISTFILE felülírásának megakadályozása (csak olvasható változóvá tétel)
+          readonly HISTFILE
+          readonly HISTSIZE
+          readonly HISTFILESIZE
+
+    - name: Ugyanezek a beállítások a .bash_profile-ban is (login shell esetére)
+      blockinfile:
+        path: "/home/{{ username }}/.bash_profile"
+        create: yes
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: "0644"
+        marker: "# {mark} ANSIBLE MANAGED – HISTORY SETTINGS"
+        block: |
+          # .bashrc betöltése login shell esetén is
+          if [ -f ~/.bashrc ]; then
+            . ~/.bashrc
+          fi

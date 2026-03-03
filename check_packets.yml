@@ -1,0 +1,134 @@
+---
+- name: Csomag-változások ellenőrzése (baseline vs. aktuális állapot)
+  hosts: testservers
+  become: true
+
+  vars:
+    baseline_dir: "./baselines"
+    diff_dir: "./diffs"
+    baseline_file: "{{ baseline_dir }}/baseline_{{ inventory_hostname }}.txt"
+    today: "{{ ansible_date_time.date }}"
+    diff_file: "{{ diff_dir }}/diff_{{ inventory_hostname }}_{{ today }}.txt"
+
+  tasks:
+
+    - name: Diff könyvtár létrehozása a vezérlőgépen
+      delegate_to: localhost
+      file:
+        path: "{{ diff_dir }}"
+        state: directory
+        mode: "0755"
+      become: false
+
+    - name: Ellenőrzés – létezik-e baseline fájl
+      delegate_to: localhost
+      stat:
+        path: "{{ baseline_file }}"
+      register: baseline_stat
+      become: false
+
+    - name: Leállítás, ha nincs baseline
+      fail:
+        msg: >-
+          Nincs baseline fájl a(z) {{ inventory_hostname }} hoszthoz!
+          Először futtasd a get_packets.yml playbookot a baseline elkészítéséhez:
+          ansible-playbook -i hosts.ini get_packets.yml
+      when: not baseline_stat.stat.exists
+
+    - name: Aktuális csomaglista lekérése verziószámmal (Debian/Ubuntu)
+      shell: dpkg-query -f '${Package}==${Version}\n' -W | sort
+      register: packages_deb
+      changed_when: false
+      when: ansible_os_family != "RedHat"
+
+    - name: Aktuális csomaglista lekérése verziószámmal (RedHat/CentOS)
+      shell: rpm -qa --qf '%{NAME}==%{VERSION}-%{RELEASE}\n' | sort
+      register: packages_rpm
+      changed_when: false
+      when: ansible_os_family == "RedHat"
+
+    - name: Aktuális csomaglista összeállítása
+      set_fact:
+        packages_current: >-
+          {{
+            packages_deb.stdout
+            if ansible_os_family != 'RedHat'
+            else packages_rpm.stdout
+          }}
+
+    - name: Ideiglenes aktuális lista mentése a vezérlőgépen
+      delegate_to: localhost
+      copy:
+        content: "{{ packages_current }}\n"
+        dest: "/tmp/current_{{ inventory_hostname }}.txt"
+      become: false
+
+    - name: Baseline sorok kinyerése (komment és üres sorok nélkül)
+      delegate_to: localhost
+      shell: grep -v '^#' "{{ baseline_file }}" | grep -v '^[[:space:]]*$' | sort
+      register: baseline_clean
+      changed_when: false
+      become: false
+
+    - name: Diff futtatása (baseline vs. aktuális)
+      delegate_to: localhost
+      shell: >
+        diff
+        <(echo "{{ baseline_clean.stdout }}")
+        <(sort /tmp/current_{{ inventory_hostname }}.txt)
+      register: diff_result
+      changed_when: false
+      failed_when: diff_result.rc > 1
+      become: false
+      args:
+        executable: /bin/bash
+
+    - name: Ideiglenes fájl törlése
+      delegate_to: localhost
+      file:
+        path: "/tmp/current_{{ inventory_hostname }}.txt"
+        state: absent
+      become: false
+
+    # ── NINCS VÁLTOZÁS ───────────────────────────────────────────────────────
+
+    - name: Nincs változás – tájékoztató üzenet
+      debug:
+        msg: "Nincs csomag-változás a(z) {{ inventory_hostname }} hosztón ({{ today }}). Diff fájl nem készült."
+      when: diff_result.rc == 0
+
+    # ── VAN VÁLTOZÁS – DIFF FÁJL MENTÉSE ────────────────────────────────────
+
+    - name: Diff fájl összeállítása és mentése (csak ha van változás)
+      delegate_to: localhost
+      copy:
+        content: |
+          ╔══════════════════════════════════════════════════════════════════════╗
+          ║   CSOMAG-VÁLTOZÁSI RIPORT – {{ inventory_hostname }}
+          ║   Dátum: {{ today }}  |  Idő: {{ ansible_date_time.time }}
+          ║   OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          ╚══════════════════════════════════════════════════════════════════════╝
+
+          Jelmagyarázat:
+            -  csomagnév==verzió  →  eltávolított vagy visszaminősített csomag
+            +  csomagnév==verzió  →  hozzáadott vagy frissített csomag
+
+          ── VÁLTOZÁSOK ──────────────────────────────────────────────────────────
+
+          {{ diff_result.stdout }}
+
+          ── ÖSSZESÍTÉS ──────────────────────────────────────────────────────────
+          Eltávolított / visszaminősített:  {{ diff_result.stdout_lines | select('match', '^<') | list | length }} csomag
+          Hozzáadott / frissített:          {{ diff_result.stdout_lines | select('match', '^>') | list | length }} csomag
+        dest: "{{ diff_file }}"
+      become: false
+      when: diff_result.rc == 1
+
+    - name: Változás észlelve – összegzés
+      debug:
+        msg: >-
+          Változás észlelve a(z) {{ inventory_hostname }} hosztón!
+          Diff mentve ide: {{ diff_file }}
+          (- {{ diff_result.stdout_lines | select('match', '^<') | list | length }} eltávolított /
+           + {{ diff_result.stdout_lines | select('match', '^>') | list | length }} hozzáadott)
+      when: diff_result.rc == 1

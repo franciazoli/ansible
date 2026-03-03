@@ -1,0 +1,211 @@
+---
+- name: Felhasználók és bejelentkezési adatok lekérése
+  hosts: testservers
+  become: true
+
+  tasks:
+
+    # ── 1. FELHASZNÁLÓK ALAPADATAI ──────────────────────────────────────────
+
+    - name: Valódi felhasználók lekérése /etc/passwd alapján (UID >= 1000, kivéve nobody)
+      shell: >
+        awk -F: '($3 >= 1000 && $1 != "nobody") { print $1 }' /etc/passwd
+      register: real_users
+      changed_when: false
+
+    - name: Teljes /etc/passwd sorok mentése (valódi felhasználók)
+      shell: >
+        awk -F: '($3 >= 1000 && $1 != "nobody") {
+          printf "Felhasználó: %-20s | UID: %-6s | GID: %-6s | Home: %-20s | Shell: %s\n",
+          $1, $3, $4, $6, $7
+        }' /etc/passwd
+      register: passwd_info
+      changed_when: false
+
+    - name: Csoporttagságok lekérése minden felhasználóhoz
+      shell: |
+        for u in {{ real_users.stdout_lines | join(' ') }}; do
+          groups=$(id -Gn "$u" 2>/dev/null | tr ' ' ',')
+          printf "%-20s -> %s\n" "$u" "$groups"
+        done
+      register: group_memberships
+      changed_when: false
+
+    - name: Jelszó állapot lekérése (zárolt / aktív / nincs jelszó)
+      shell: |
+        for u in {{ real_users.stdout_lines | join(' ') }}; do
+          status=$(passwd -S "$u" 2>/dev/null | awk '{print $2}')
+          case "$status" in
+            P)  label="Aktív jelszó" ;;
+            L|LK) label="Zárolt fiók" ;;
+            NP) label="Nincs jelszó" ;;
+            *)  label="Ismeretlen ($status)" ;;
+          esac
+          printf "%-20s -> %s\n" "$u" "$label"
+        done
+      register: passwd_status
+      changed_when: false
+
+    - name: Jelszó lejárati adatok (chage)
+      shell: |
+        for u in {{ real_users.stdout_lines | join(' ') }}; do
+          echo ">>> $u"
+          chage -l "$u" 2>/dev/null || echo "  (nem elérhető)"
+          echo ""
+        done
+      register: chage_info
+      changed_when: false
+
+    # ── 2. BEJELENTKEZÉSI ELŐZMÉNYEK ────────────────────────────────────────
+
+    - name: lastlog – utolsó bejelentkezés minden felhasználóhoz
+      shell: lastlog 2>/dev/null
+      register: lastlog_output
+      changed_when: false
+
+    - name: last – bejelentkezési előzmények (utolsó 100 bejegyzés)
+      shell: last -n 100 -F 2>/dev/null || last -n 100 2>/dev/null
+      register: last_output
+      changed_when: false
+
+    - name: lastb – sikertelen bejelentkezési kísérletek
+      shell: lastb -n 50 2>/dev/null || echo "(lastb nem elérhető vagy üres)"
+      register: lastb_output
+      changed_when: false
+      ignore_errors: true
+
+    - name: who – jelenleg bejelentkezett felhasználók
+      shell: who -a 2>/dev/null || echo "(senki nincs bejelentkezve)"
+      register: who_output
+      changed_when: false
+
+    - name: w – aktív munkamenetek és CPU/terhelés adatok
+      shell: w 2>/dev/null || echo "(nem elérhető)"
+      register: w_output
+      changed_when: false
+
+    # ── 3. BASH HISTORY ─────────────────────────────────────────────────────
+
+    - name: Bash history lekérése minden valódi felhasználótól
+      shell: |
+        for u in {{ real_users.stdout_lines | join(' ') }}; do
+          home=$(getent passwd "$u" | cut -d: -f6)
+          hist_file="$home/.bash_history"
+          echo "=== $u ==="
+          if [ -f "$hist_file" ]; then
+            wc -l < "$hist_file" | xargs -I{} echo "  Sorok száma: {}"
+            echo "  Utolsó 30 parancs (időbélyeggel, ha elérhető):"
+            tail -n 30 "$hist_file" 2>/dev/null | sed 's/^/    /'
+          else
+            echo "  (.bash_history nem létezik vagy nem olvasható)"
+          fi
+          echo ""
+        done
+      register: bash_history
+      changed_when: false
+
+    - name: Root bash history (külön, mert eltérő home)
+      shell: |
+        echo "=== root ==="
+        if [ -f /root/.bash_history ]; then
+          wc -l < /root/.bash_history | xargs -I{} echo "  Sorok száma: {}"
+          echo "  Utolsó 30 parancs:"
+          tail -n 30 /root/.bash_history 2>/dev/null | sed 's/^/    /'
+        else
+          echo "  (.bash_history nem létezik)"
+        fi
+      register: root_history
+      changed_when: false
+
+    # ── 4. AUTH LOG (rendszerszintű bejelentkezési napló) ───────────────────
+
+    - name: Auth log utolsó 100 sora (ssh/sudo/su bejegyzések)
+      shell: |
+        logfile=""
+        for f in /var/log/auth.log /var/log/secure; do
+          [ -f "$f" ] && logfile="$f" && break
+        done
+        if [ -n "$logfile" ]; then
+          grep -E "sshd|sudo|su\[|login" "$logfile" | tail -n 100
+        else
+          echo "(auth.log / secure nem elérhető)"
+        fi
+      register: auth_log
+      changed_when: false
+      ignore_errors: true
+
+    - name: Sudo használat naplója
+      shell: |
+        logfile=""
+        for f in /var/log/auth.log /var/log/secure; do
+          [ -f "$f" ] && logfile="$f" && break
+        done
+        if [ -n "$logfile" ]; then
+          grep "sudo" "$logfile" | tail -n 50
+        else
+          echo "(nem elérhető)"
+        fi
+      register: sudo_log
+      changed_when: false
+      ignore_errors: true
+
+    # ── 5. RIPORT ÖSSZEÁLLÍTÁSA ÉS MENTÉSE ──────────────────────────────────
+
+    - name: Teljes riport összeállítása és mentése a célgépen
+      copy:
+        dest: "/tmp/user_report_{{ inventory_hostname }}.txt"
+        content: |
+          ╔══════════════════════════════════════════════════════════════════╗
+          ║          FELHASZNÁLÓI RIPORT – {{ inventory_hostname }}          ║
+          ║          Készült: {{ ansible_date_time.iso8601 }}                ║
+          ╚══════════════════════════════════════════════════════════════════╝
+
+          ── FELHASZNÁLÓK ALAPADATAI (/etc/passwd) ───────────────────────────
+          {{ passwd_info.stdout | default('(nincs adat)') }}
+
+          ── CSOPORTTAGSÁGOK ──────────────────────────────────────────────────
+          {{ group_memberships.stdout | default('(nincs adat)') }}
+
+          ── JELSZÓ ÁLLAPOT ────────────────────────────────────────────────────
+          {{ passwd_status.stdout | default('(nincs adat)') }}
+
+          ── JELSZÓ LEJÁRATI ADATOK (chage) ───────────────────────────────────
+          {{ chage_info.stdout | default('(nincs adat)') }}
+
+          ── UTOLSÓ BEJELENTKEZÉS (lastlog) ───────────────────────────────────
+          {{ lastlog_output.stdout | default('(nincs adat)') }}
+
+          ── BEJELENTKEZÉSI ELŐZMÉNYEK (last) ─────────────────────────────────
+          {{ last_output.stdout | default('(nincs adat)') }}
+
+          ── SIKERTELEN BELÉPÉSI KÍSÉRLETEK (lastb) ───────────────────────────
+          {{ lastb_output.stdout | default('(nincs adat)') }}
+
+          ── JELENLEG BEJELENTKEZETT FELHASZNÁLÓK (who) ───────────────────────
+          {{ who_output.stdout | default('(nincs adat)') }}
+
+          ── AKTÍV MUNKAMENETEK ÉS TERHELÉS (w) ───────────────────────────────
+          {{ w_output.stdout | default('(nincs adat)') }}
+
+          ── BASH HISTORY (valódi felhasználók) ───────────────────────────────
+          {{ bash_history.stdout | default('(nincs adat)') }}
+
+          ── BASH HISTORY (root) ───────────────────────────────────────────────
+          {{ root_history.stdout | default('(nincs adat)') }}
+
+          ── AUTH LOG (ssh/sudo/su/login bejegyzések) ──────────────────────────
+          {{ auth_log.stdout | default('(nincs adat)') }}
+
+          ── SUDO HASZNÁLATI NAPLÓ ─────────────────────────────────────────────
+          {{ sudo_log.stdout | default('(nincs adat)') }}
+
+    - name: Riport letöltése a vezérlőgépre
+      fetch:
+        src: "/tmp/user_report_{{ inventory_hostname }}.txt"
+        dest: "./user_report_{{ inventory_hostname }}.txt"
+        flat: yes
+
+    - name: Ideiglenes fájl törlése a célgépről
+      file:
+        path: "/tmp/user_report_{{ inventory_hostname }}.txt"
+        state: absent

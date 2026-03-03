@@ -1,0 +1,273 @@
+# ========================================
+# ANSIBLE PLAYBOOK HASZNÁLATI ÚTMUTATÓ
+# ========================================
+
+# ---------- ELŐFELTÉTELEK ---------- #
+
+# 1. Docker telepítése (ha még nincs)
+sudo apt update
+sudo apt install docker.io -y
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# 2. Ansible telepítése
+sudo apt install ansible -y
+# vagy
+pip install ansible
+
+# ---------- FÁJLOK LÉTREHOZÁSA ---------- #
+
+# 3. Szükséges fájlok a munkakönyvtárban:
+#    - Dockerfile
+#    - hosts.ini
+#    - ansible.cfg
+#    - create_user.yml
+#    - remove_user.yml
+#    - get_users.yml
+#    - get_packets.yml
+#    - check_packets.yml
+
+# ---------- SSH KULCSOK TISZTÍTÁSA (ha újraindítod a konténereket) ---------- #
+
+# 4. Régi SSH kulcsok törlése (ha korábban már futtatták)
+ssh-keygen -f "$HOME/.ssh/known_hosts" -R "[localhost]:2221" 2>/dev/null
+ssh-keygen -f "$HOME/.ssh/known_hosts" -R "[localhost]:2222" 2>/dev/null
+
+# ---------- KONTÉNEREK ELKÉSZÍTÉSE ---------- #
+
+# 5. Régi konténerek törlése (ha vannak)
+docker stop node1 node2 2>/dev/null
+docker rm node1 node2 2>/dev/null
+
+# 6. Docker image build
+docker build -t ansible-ssh-fixed .
+
+# 7. Konténerek indítása
+docker run -d --name node1 -p 2221:22 ansible-ssh-fixed
+docker run -d --name node2 -p 2222:22 ansible-ssh-fixed
+
+# 8. Konténerek ellenőrzése
+docker ps
+docker logs node1
+docker logs node2
+
+# ---------- KAPCSOLAT TESZTELÉSE ---------- #
+
+# 9. Ansible ping teszt (FONTOS: először ezt!)
+ansible -i hosts.ini testservers -m ping
+
+# Ha a ping működik, folytathatod a munkát!
+
+# ============================================================
+# get_packets.yml – Csomagok baseline mentése verziószámmal
+# ============================================================
+#
+# Mire való?
+#   Elmenti az összes telepített csomag nevét és verzióját egy
+#   baseline fájlba (./baselines/baseline_<hoszt>.txt).
+#   Ezt kell ELŐSZÖR futtatni, mielőtt check_packets.yml-t használnád.
+#   Ha a baseline már létezik, nem írja felül – csak figyelmeztet.
+#
+# Létrehozott fájlok:
+#   ./baselines/baseline_node1.txt
+#   ./baselines/baseline_node2.txt
+
+# 10. Baseline mentése minden szerverre
+ansible-playbook -i hosts.ini get_packets.yml
+
+# 11. Ellenőrzés: létrejöttek-e a baseline fájlok
+ls -la baselines/
+cat baselines/baseline_node1.txt | head -20
+
+# Baseline kézi törlése (ha újra szeretnéd generálni):
+rm baselines/baseline_node1.txt
+rm baselines/baseline_node2.txt
+
+# ============================================================
+# check_packets.yml – Csomag-változások ellenőrzése
+# ============================================================
+#
+# Mire való?
+#   Összehasonlítja az aktuális csomaglistát a korábban mentett
+#   baseline-nal. Ha van eltérés, diff fájlt ment el dátummal
+#   (./diffs/diff_<hoszt>_<dátum>.txt). Ha nincs változás, nem
+#   keletkezik fájl, csak tájékoztató üzenetet ír ki.
+#
+# ELŐFELTÉTEL: get_packets.yml már lefutott (baseline létezik)!
+#
+# Létrehozott fájlok (csak ha van változás):
+#   ./diffs/diff_node1_YYYY-MM-DD.txt
+#   ./diffs/diff_node2_YYYY-MM-DD.txt
+#
+# Jelmagyarázat a diff fájlban:
+#   - csomagnév==verzió  →  eltávolított vagy visszaminősített csomag
+#   + csomagnév==verzió  →  hozzáadott vagy frissített csomag
+
+# 12. Változások ellenőrzése
+ansible-playbook -i hosts.ini check_packets.yml
+
+# 13. Diff fájlok megtekintése
+ls -la diffs/
+cat diffs/diff_node1_$(date +%Y-%m-%d).txt
+
+# Ajánlott: naponta cronból futtatni az ellenőrzést:
+# 0 6 * * * cd /path/to/project && ansible-playbook -i hosts.ini check_packets.yml
+
+# ============================================================
+# get_users.yml – Felhasználói riport készítése
+# ============================================================
+#
+# Mire való?
+#   Részletes riportot készít minden szerver felhasználóiról és
+#   bejelentkezési előzményeiről. A riport tartalmazza:
+#     - Felhasználók alapadatai (UID, GID, home, shell)
+#     - Csoporttagságok
+#     - Jelszó állapot (aktív / zárolt / nincs jelszó)
+#     - Jelszó lejárati adatok (chage)
+#     - Utolsó bejelentkezés (lastlog)
+#     - Bejelentkezési előzmények (last, utolsó 100 bejegyzés)
+#     - Sikertelen belépési kísérletek (lastb)
+#     - Jelenleg bejelentkezett felhasználók (who, w)
+#     - Bash history (minden valódi felhasználó + root)
+#     - Auth log (ssh/sudo/su bejegyzések, utolsó 100 sor)
+#     - Sudo használati napló
+#
+# Létrehozott fájlok (a vezérlőgépen, a playbook mappájában):
+#   ./user_report_node1.txt
+#   ./user_report_node2.txt
+
+# 14. Felhasználói riport lekérése
+ansible-playbook -i hosts.ini get_users.yml
+
+# 15. Riportok megtekintése
+ls -la user_report_*.txt
+cat user_report_node1.txt
+cat user_report_node2.txt
+
+# ============================================================
+# create_user.yml – Felhasználók létrehozása
+# ============================================================
+#
+# Mire való?
+#   Új felhasználót hoz létre a megadott szerveren jelszóval,
+#   opcionálisan csoporttagsággal. Ha az 'admins' csoport meg
+#   van adva, automatikusan sudo jogot is kap a felhasználó.
+#
+# Kötelező paraméterek:
+#   user=<felhasználónév>
+#   password=<jelszó>
+#
+# Opcionális paraméterek:
+#   user_groups=['csoport1','csoport2']  (alapértelmezett: üres)
+
+# 16. Egyszerű felhasználó létrehozása
+ansible-playbook -i hosts.ini create_user.yml \
+  -e "user=janos" \
+  -e "password=TitkosJelszo123"
+
+# 17. Felhasználó létrehozása csoportokkal
+ansible-playbook -i hosts.ini create_user.yml \
+  -e "user=admin_user" \
+  -e "password=AdminPass456" \
+  -e "user_groups=['admins','developers']"
+
+# 18. Admin felhasználó sudo joggal (admins csoport szükséges)
+ansible-playbook -i hosts.ini create_user.yml \
+  -e "user=superadmin" \
+  -e "password=SuperSecure789" \
+  -e "user_groups=['admins']"
+
+# ============================================================
+# remove_user.yml – Felhasználók eltávolítása
+# ============================================================
+#
+# Mire való?
+#   Biztonságosan eltávolít egy felhasználót minden szerverről:
+#   leállítja az aktív folyamatait, törli a home könyvtárát,
+#   a sudoers bejegyzését, és ellenőrzi az eltávolítást.
+#
+# Biztonsági védelmek:
+#   - A 'root' felhasználó törlése blokkolva van
+#   - Ha a felhasználó nem létezik, hibaüzenetet ad (nem áll le)
+#   - Törlés után ellenőrzi, hogy valóban eltűnt-e a /etc/passwd-ból
+#   - Ha az admins csoport kiürül, törli az /etc/sudoers.d/admins fájlt is
+#
+# Kötelező paraméterek:
+#   user=<felhasználónév>
+
+# 19. Felhasználó eltávolítása
+ansible-playbook -i hosts.ini remove_user.yml \
+  -e "user=janos"
+
+# 20. Dry-run (nem hajt végre változtatást, csak megmutatja mit tenne)
+ansible-playbook -i hosts.ini remove_user.yml \
+  -e "user=janos" \
+  --check
+
+# ---------- TESZTELÉS ÉS ELLENŐRZÉS ---------- #
+
+# 21. Parancs futtatása minden szerveren
+ansible -i hosts.ini testservers -a "whoami" -b
+
+# 22. Létrehozott felhasználó ellenőrzése
+ansible -i hosts.ini testservers -a "id janos" -b
+
+# 23. Felhasználók listázása
+ansible -i hosts.ini testservers -a "cat /etc/passwd | grep janos" -b
+
+# 24. Sudo jogosultság ellenőrzése (admins csoport esetén)
+ansible -i hosts.ini testservers -a "sudo -l -U superadmin" -b
+
+# 25. Belépés a konténerbe (manuális ellenőrzéshez)
+docker exec -it node1 bash
+# Bent a konténerben:
+# su - janos
+# sudo ls /root  (ha admins csoportban van)
+# exit
+
+# ---------- HIBAKERESÉS ---------- #
+
+# Részletes kimenet (-v, -vv, -vvv)
+ansible-playbook -i hosts.ini get_packets.yml -vvv
+
+# Dry-run (nem hajt végre változtatásokat)
+ansible-playbook -i hosts.ini create_user.yml \
+  -e "user=test" \
+  -e "password=test123" \
+  --check
+
+# SSH kapcsolat közvetlen tesztelése
+ssh -p 2221 root@localhost
+# Jelszó: root
+
+# Konténer logok megtekintése
+docker logs node1
+
+# ---------- TISZTÍTÁS / ÚJRAINDÍTÁS ---------- #
+
+# Konténerek leállítása és törlése
+docker stop node1 node2
+docker rm node1 node2
+
+# Docker image törlése
+docker rmi ansible-ssh-fixed
+
+# SSH kulcsok törlése
+rm -f ~/.ssh/known_hosts
+
+# Létrejött fájlok törlése
+rm -f user_report_*.txt
+rm -rf baselines/
+rm -rf diffs/
+
+# ---------- ÚJRAINDÍTÁS NULLÁRÓL ---------- #
+
+docker stop node1 node2 2>/dev/null
+docker rm node1 node2 2>/dev/null
+ssh-keygen -f "$HOME/.ssh/known_hosts" -R "[localhost]:2221" 2>/dev/null
+ssh-keygen -f "$HOME/.ssh/known_hosts" -R "[localhost]:2222" 2>/dev/null
+docker build -t ansible-ssh-fixed .
+docker run -d --name node1 -p 2221:22 ansible-ssh-fixed
+docker run -d --name node2 -p 2222:22 ansible-ssh-fixed
+sleep 5
+ansible -i hosts.ini testservers -m ping

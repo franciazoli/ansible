@@ -1,0 +1,78 @@
+---
+- name: Telepített csomagok baseline mentése (verziószámokkal)
+  hosts: testservers
+  become: true
+
+  vars:
+    baseline_dir: "./baselines"
+    baseline_file: "{{ baseline_dir }}/baseline_{{ inventory_hostname }}.txt"
+
+  tasks:
+
+    - name: Baseline könyvtár létrehozása a vezérlőgépen
+      delegate_to: localhost
+      file:
+        path: "{{ baseline_dir }}"
+        state: directory
+        mode: "0755"
+      become: false
+      run_once: false
+
+    - name: Ellenőrzés – létezik-e már baseline fájl
+      delegate_to: localhost
+      stat:
+        path: "{{ baseline_file }}"
+      register: baseline_stat
+      become: false
+
+    - name: Figyelmeztetés, ha már létezik baseline
+      debug:
+        msg: >-
+          FIGYELEM: Baseline már létezik a(z) {{ inventory_hostname }} hoszthoz
+          ({{ baseline_file }}). Ha felül szeretnéd írni, töröld a fájlt kézzel,
+          majd futtasd újra ezt a playbookot.
+      when: baseline_stat.stat.exists
+
+    - name: Csomagok lekérése verziószámmal (Debian/Ubuntu)
+      shell: dpkg-query -f '${Package}==${Version}\n' -W | sort
+      register: packages_deb
+      changed_when: false
+      when: ansible_os_family != "RedHat"
+
+    - name: Csomagok lekérése verziószámmal (RedHat/CentOS)
+      shell: rpm -qa --qf '%{NAME}==%{VERSION}-%{RELEASE}\n' | sort
+      register: packages_rpm
+      changed_when: false
+      when: ansible_os_family == "RedHat"
+
+    - name: Csomaglista összeállítása (egységes változó)
+      set_fact:
+        packages_output: >-
+          {{
+            packages_deb.stdout
+            if ansible_os_family != 'RedHat'
+            else packages_rpm.stdout
+          }}
+
+    - name: Baseline mentése (csak ha még nem létezik)
+      delegate_to: localhost
+      copy:
+        content: |
+          # BASELINE – {{ inventory_hostname }}
+          # Létrehozva: {{ ansible_date_time.iso8601 }}
+          # OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          # Formátum: csomagnév==verzió
+          #
+          {{ packages_output }}
+        dest: "{{ baseline_file }}"
+      become: false
+      when: not baseline_stat.stat.exists
+
+    - name: Eredmény összegzése
+      debug:
+        msg: >-
+          {{
+            'Baseline sikeresen mentve: ' + baseline_file
+            if not baseline_stat.stat.exists
+            else 'Baseline már létezik, nem lett felülírva: ' + baseline_file
+          }}

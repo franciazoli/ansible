@@ -1,0 +1,70 @@
+---
+- name: Felhasználó eltávolítása
+  hosts: testservers
+  become: true
+
+  vars:
+    username: "{{ user }}"
+
+  pre_tasks:
+    - name: Root törlésének megakadályozása
+      fail:
+        msg: "A root felhasználó eltávolítása nem engedélyezett!"
+      when: username == "root"
+
+    - name: Ellenőrzés – felhasználó létezik-e a /etc/passwd-ban
+      shell: "grep -c '^{{ username }}:' /etc/passwd || true"
+      register: user_check
+      changed_when: false
+
+    - name: Leállítás, ha a felhasználó nem létezik
+      fail:
+        msg: "A(z) '{{ username }}' felhasználó nem létezik ezen a gépen: {{ inventory_hostname }}"
+      when: user_check.stdout | int == 0
+
+  tasks:
+    - name: Futó folyamatok kilövése (aktív session-ök megszüntetése)
+      shell: "pkill -KILL -u {{ username }} || true"
+      changed_when: false
+
+    - name: Felhasználó eltávolítása home könyvtárral együtt
+      user:
+        name: "{{ username }}"
+        state: absent
+        remove: true
+        force: true
+
+    - name: Maradék home könyvtár törlése (ha még létezik)
+      file:
+        path: "/home/{{ username }}"
+        state: absent
+
+    - name: Felhasználónkénti sudoers fájl törlése
+      file:
+        path: "/etc/sudoers.d/{{ username }}"
+        state: absent
+
+    - name: Admins sudoers fájl törlése, ha az admins csoport kiürült
+      shell: |
+        if [ -f /etc/sudoers.d/admins ]; then
+          remaining=$(grep '^admins:' /etc/group | cut -d: -f4)
+          if [ -z "$remaining" ]; then
+            rm -f /etc/sudoers.d/admins
+          fi
+        fi
+      changed_when: false
+      ignore_errors: true
+
+    - name: Ellenőrzés – felhasználó valóban eltávolítva (/etc/passwd alapján)
+      shell: "grep -c '^{{ username }}:' /etc/passwd || true"
+      register: check_removed
+      changed_when: false
+
+    - name: Eredmény kiírása
+      debug:
+        msg: >-
+          {{
+            'A(z) ' + username + ' felhasználó sikeresen eltávolítva: ' + inventory_hostname
+            if check_removed.stdout | int == 0
+            else 'FIGYELEM: A felhasználó még mindig létezik: ' + inventory_hostname
+          }}
