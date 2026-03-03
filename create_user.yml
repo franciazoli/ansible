@@ -9,6 +9,30 @@
     user_groups_var: "{{ user_groups | default([]) }}"
 
   tasks:
+    - name: Jelszó hossz ellenőrzése
+      assert:
+        that: password | length >= 12
+        fail_msg: "A jelszó túl rövid! ({{ password | length }} karakter, minimum 12 szükséges)"
+        quiet: true
+
+    - name: Jelszó nagybetű ellenőrzése
+      assert:
+        that: password is match('.*[A-Z].*')
+        fail_msg: "A jelszónak tartalmaznia kell legalább 1 nagybetűt!"
+        quiet: true
+
+    - name: Jelszó kisbetű ellenőrzése
+      assert:
+        that: password is match('.*[a-z].*')
+        fail_msg: "A jelszónak tartalmaznia kell legalább 1 kisbetűt!"
+        quiet: true
+
+    - name: Jelszó szám ellenőrzése
+      assert:
+        that: password is match('.*[0-9].*')
+        fail_msg: "A jelszónak tartalmaznia kell legalább 1 számot!"
+        quiet: true
+
     - name: Csoport létrehozása (ha nem létezik)
       group:
         name: "{{ item }}"
