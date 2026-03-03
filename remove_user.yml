@@ -23,9 +23,19 @@
       when: user_check.stdout | int == 0
 
   tasks:
-    - name: Futó folyamatok kilövése (aktív session-ök megszüntetése)
+    - name: Folyamatok rendezett leállítása SIGTERM-mel
+      shell: "pkill -TERM -u {{ username }} || true"
+      changed_when: false
+
+    - name: Várakozás a rendezett leállásra (max 10 másodperc)
+      shell: "sleep 10 && pkill -0 -u {{ username }} 2>/dev/null && echo 'still_running' || echo 'stopped'"
+      register: process_check
+      changed_when: false
+
+    - name: Maradék folyamatok kényszer-leállítása SIGKILL-lel (ha szükséges)
       shell: "pkill -KILL -u {{ username }} || true"
       changed_when: false
+      when: "'still_running' in process_check.stdout"
 
     - name: Felhasználó eltávolítása home könyvtárral együtt
       user:
