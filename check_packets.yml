@@ -8,6 +8,7 @@
     baseline_file: "{{ baseline_dir }}/baseline_{{ inventory_hostname }}.txt"
     today: "{{ ansible_date_time.date }}"
     diff_file: "{{ diff_dir }}/diff_{{ inventory_hostname }}_{{ today }}.txt"
+    diff_retention_days: 30
 
   tasks:
 
@@ -146,3 +147,12 @@
           (- {{ diff_result.stdout_lines | select('match', '^<') | list | length }} eltávolított /
            + {{ diff_result.stdout_lines | select('match', '^>') | list | length }} hozzáadott)
       when: diff_result.rc == 1
+
+    # ── RETENTION POLICY ────────────────────────────────────────────────────
+
+    - name: "{{ diff_retention_days }} napnál régebbi diff fájlok törlése"
+      delegate_to: localhost
+      shell: "find {{ diff_dir }} -name 'diff_{{ inventory_hostname }}_*.txt' -mtime +{{ diff_retention_days }} -delete 2>/dev/null || true"
+      become: false
+      changed_when: false
+      run_once: false

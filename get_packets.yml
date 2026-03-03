@@ -5,6 +5,8 @@
   vars:
     baseline_dir: "./baselines"
     baseline_file: "{{ baseline_dir }}/baseline_{{ inventory_hostname }}.txt"
+    diff_dir: "./diffs"
+    force_update: false
 
   tasks:
 
@@ -24,13 +26,12 @@
       register: baseline_stat
       become: false
 
-    - name: Figyelmeztetés, ha már létezik baseline
+    - name: Figyelmeztetés, ha már létezik baseline és nem force_update
       debug:
         msg: >-
           FIGYELEM: Baseline már létezik a(z) {{ inventory_hostname }} hoszthoz
-          ({{ baseline_file }}). Ha felül szeretnéd írni, töröld a fájlt kézzel,
-          majd futtasd újra ezt a playbookot.
-      when: baseline_stat.stat.exists
+          ({{ baseline_file }}). Felülíráshoz használd: -e "force_update=true"
+      when: baseline_stat.stat.exists and not force_update | bool
 
     - name: Csomagok lekérése verziószámmal (Debian/Ubuntu)
       shell: dpkg-query -f '${Package}==${Version}\n' -W | sort
@@ -53,7 +54,7 @@
             else packages_rpm.stdout
           }}
 
-    - name: Baseline mentése (csak ha még nem létezik)
+    - name: Baseline mentése (új vagy force_update esetén)
       delegate_to: localhost
       copy:
         content: |
@@ -65,13 +66,20 @@
           {{ packages_output }}
         dest: "{{ baseline_file }}"
       become: false
-      when: not baseline_stat.stat.exists
+      when: not baseline_stat.stat.exists or force_update | bool
+
+    - name: Régi diff fájlok törlése (baseline frissítésekor)
+      delegate_to: localhost
+      shell: "find {{ diff_dir }} -name 'diff_{{ inventory_hostname }}_*.txt' -delete 2>/dev/null || true"
+      become: false
+      when: (not baseline_stat.stat.exists or force_update | bool)
+      changed_when: false
 
     - name: Eredmény összegzése
       debug:
         msg: >-
           {{
             'Baseline sikeresen mentve: ' + baseline_file
-            if not baseline_stat.stat.exists
+            if (not baseline_stat.stat.exists or force_update | bool)
             else 'Baseline már létezik, nem lett felülírva: ' + baseline_file
           }}
