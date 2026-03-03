@@ -1,7 +1,6 @@
 ---
 - name: Csomag-változások ellenőrzése (baseline vs. aktuális állapot)
   hosts: testservers
-  become: true
 
   vars:
     baseline_dir: "./baselines"

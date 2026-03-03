@@ -1,7 +1,6 @@
 ---
 - name: Telepített csomagok baseline mentése (verziószámokkal)
   hosts: testservers
-  become: true
 
   vars:
     baseline_dir: "./baselines"
