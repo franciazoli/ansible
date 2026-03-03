@@ -210,6 +210,19 @@
         dest: "./user_report_{{ inventory_hostname }}.txt"
         flat: yes
 
+    - name: Riport fájljogosultságok beállítása (chmod 600)
+      local_action:
+        module: file
+        path: "./user_report_{{ inventory_hostname }}.txt"
+        mode: "0600"
+      become: false
+
+    - name: Riport titkosítása ansible-vault-tal
+      local_action:
+        module: shell
+        cmd: ansible-vault encrypt "./user_report_{{ inventory_hostname }}.txt"
+      become: false
+
     - name: Ideiglenes fájl törlése a célgépről
       file:
         path: "/tmp/user_report_{{ inventory_hostname }}.txt"

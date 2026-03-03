@@ -123,6 +123,21 @@
       become: false
       when: diff_result.rc == 1
 
+    - name: Diff fájl jogosultságok beállítása (chmod 600)
+      local_action:
+        module: file
+        path: "{{ diff_file }}"
+        mode: "0600"
+      become: false
+      when: diff_result.rc == 1
+
+    - name: Diff fájl titkosítása ansible-vault-tal
+      local_action:
+        module: shell
+        cmd: ansible-vault encrypt "{{ diff_file }}"
+      become: false
+      when: diff_result.rc == 1
+
     - name: Változás észlelve – összegzés
       debug:
         msg: >-
