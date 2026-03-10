@@ -3,3 +3,5 @@ user_report_*.txt
 baselines/
 diffs/
 packages_node*.txt
+itop/
+itop_export/
