@@ -1,0 +1,59 @@
+---
+- name: Telepített csomagok exportálása iTop-kompatibilis CSV formátumban
+  hosts: testservers
+  gather_facts: true
+
+  vars:
+    export_dir: "./itop_export"
+    export_file: "{{ export_dir }}/itop_packages_{{ inventory_hostname }}.csv"
+    # Az iTop SoftwareInstance osztályának fejléce – pontosan így kell az importhoz
+    itop_csv_header: '"name";"version";"vendor";"status";"server_id->name"'
+
+  tasks:
+
+    - name: Export könyvtár létrehozása a vezérlőgépen
+      delegate_to: localhost
+      file:
+        path: "{{ export_dir }}"
+        state: directory
+        mode: "0755"
+      become: false
+
+    - name: Csomagok lekérése iTop formátumban (Debian/Ubuntu)
+      shell: >
+        dpkg-query -W
+        -f='"${Package}";"${Version}";"{{ ansible_distribution }}";"active";"{{ inventory_hostname }}"\n'
+        | sort
+      register: packages_deb
+      changed_when: false
+      when: ansible_os_family != "RedHat"
+
+    - name: Csomagok lekérése iTop formátumban (RedHat/CentOS)
+      shell: >
+        rpm -qa
+        --qf '"%{NAME}";"%{VERSION}-%{RELEASE}";"{{ ansible_distribution }}";"active";"{{ inventory_hostname }}"\n'
+        | sort
+      register: packages_rpm
+      changed_when: false
+      when: ansible_os_family == "RedHat"
+
+    - name: Csomagsorok összeállítása
+      set_fact:
+        packages_rows: >-
+          {{
+            packages_deb.stdout
+            if ansible_os_family != 'RedHat'
+            else packages_rpm.stdout
+          }}
+
+    - name: CSV fájl mentése vezérlőgépre
+      delegate_to: localhost
+      copy:
+        content: "{{ itop_csv_header }}\n{{ packages_rows }}\n"
+        dest: "{{ export_file }}"
+        mode: "0644"
+      become: false
+
+    - name: Exportálás eredménye
+      debug:
+        msg: "iTop CSV exportálva: {{ export_file }} ({{ packages_rows.split('\n') | length }} csomag)"
