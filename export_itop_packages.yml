@@ -1,13 +1,12 @@
 ---
-- name: Telepített csomagok exportálása iTop-kompatibilis CSV formátumban
+# 1. Play: CSV fájlok generálása a szervereken és letöltése
+- name: Csomagadatok összegyűjtése és CSV exportálása
   hosts: testservers
   gather_facts: true
 
   vars:
     export_dir: "./itop_export"
-    export_file: "{{ export_dir }}/itop_packages_{{ inventory_hostname }}.csv"
-    # Az iTop SoftwareInstance osztályának fejléce – pontosan így kell az importhoz
-    itop_csv_header: '"name";"version";"vendor";"status";"server_id->name"'
+    org_name: "My Company"  # Módosítsd az iTop-ban lévő szervezet nevére
 
   tasks:
 
@@ -18,42 +17,90 @@
         state: directory
         mode: "0755"
       become: false
+      run_once: true
 
-    - name: Csomagok lekérése iTop formátumban (Debian/Ubuntu)
+    - name: Software CSV sorok generálása (Debian/Ubuntu)
       shell: >
         dpkg-query -W
-        -f='"${Package}";"${Version}";"{{ ansible_distribution }}";"active";"{{ inventory_hostname }}"\n'
-        | sort
-      register: packages_deb
-      changed_when: false
+        -f='"${Package}";"${Version}";"{{ ansible_distribution }}"\n'
+        | sort > /tmp/itop_software_rows.csv
+      changed_when: true
       when: ansible_os_family != "RedHat"
 
-    - name: Csomagok lekérése iTop formátumban (RedHat/CentOS)
+    - name: Software CSV sorok generálása (RedHat/CentOS)
       shell: >
         rpm -qa
-        --qf '"%{NAME}";"%{VERSION}-%{RELEASE}";"{{ ansible_distribution }}";"active";"{{ inventory_hostname }}"\n'
-        | sort
-      register: packages_rpm
-      changed_when: false
+        --qf '"%{NAME}";"%{VERSION}-%{RELEASE}";"{{ ansible_distribution }}"\n'
+        | sort > /tmp/itop_software_rows.csv
+      changed_when: true
       when: ansible_os_family == "RedHat"
 
-    - name: Csomagsorok összeállítása
-      set_fact:
-        packages_rows: >-
-          {{
-            packages_deb.stdout
-            if ansible_os_family != 'RedHat'
-            else packages_rpm.stdout
-          }}
+    - name: SoftwareInstance CSV generálása (Debian/Ubuntu)
+      shell: |
+        (
+          echo '"software_id->name";"server_id->name";"org_id->name"'
+          dpkg-query -W -f='"${Package}";"{{ inventory_hostname }}";"{{ org_name }}"\n' | sort
+        ) > /tmp/itop_instances.csv
+      changed_when: true
+      when: ansible_os_family != "RedHat"
 
-    - name: CSV fájl mentése vezérlőgépre
-      delegate_to: localhost
-      copy:
-        content: "{{ itop_csv_header }}\n{{ packages_rows }}\n"
-        dest: "{{ export_file }}"
-        mode: "0644"
-      become: false
+    - name: SoftwareInstance CSV generálása (RedHat/CentOS)
+      shell: |
+        (
+          echo '"software_id->name";"server_id->name";"org_id->name"'
+          rpm -qa --qf '"%{NAME}";"{{ inventory_hostname }}";"{{ org_name }}"\n' | sort
+        ) > /tmp/itop_instances.csv
+      changed_when: true
+      when: ansible_os_family == "RedHat"
 
-    - name: Exportálás eredménye
+    - name: SoftwareInstance CSV letöltése
+      fetch:
+        src: /tmp/itop_instances.csv
+        dest: "{{ export_dir }}/itop_instances_{{ inventory_hostname }}.csv"
+        flat: true
+
+    - name: Software sorok letöltése (deduplikációhoz)
+      fetch:
+        src: /tmp/itop_software_rows.csv
+        dest: "{{ export_dir }}/software_rows_{{ inventory_hostname }}.csv"
+        flat: true
+
+    - name: Ideiglenes fájlok törlése a szerverről
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/itop_instances.csv
+        - /tmp/itop_software_rows.csv
+
+
+# 2. Play: Deduplikált Software CSV összeállítása a vezérlőgépen
+- name: Software katalógus CSV összeállítása
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    export_dir: "./itop_export"
+
+  tasks:
+
+    - name: Software CSV összeállítása (deduplikálva)
+      shell: >
+        (
+          echo '"name";"version";"vendor"';
+          sort -u {{ export_dir }}/software_rows_*.csv
+        ) > {{ export_dir }}/itop_software.csv
+      changed_when: true
+
+    - name: Ideiglenes software_rows fájlok törlése
+      shell: rm -f {{ export_dir }}/software_rows_*.csv
+      changed_when: false
+
+    - name: Csomagszám meghatározása
+      shell: wc -l < {{ export_dir }}/itop_software.csv
+      register: sw_lines
+      changed_when: false
+
+    - name: Összesítés
       debug:
-        msg: "iTop CSV exportálva: {{ export_file }} ({{ packages_rows.split('\n') | length }} csomag)"
+        msg: "Software CSV kész: {{ export_dir }}/itop_software.csv ({{ sw_lines.stdout | int - 1 }} egyedi csomag)"
